@@ -26,6 +26,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.ArrayList;
 
 import android.content.ActivityNotFoundException;
 import android.os.Build;
@@ -77,7 +78,11 @@ public class Capture extends CordovaPlugin {
     private static final int CAPTURE_NO_MEDIA_FILES = 3;
     private static final int CAPTURE_PERMISSION_DENIED = 4;
     private static final int CAPTURE_NOT_SUPPORTED = 20;
-
+				public static final int PERMISSION_DENIED_ERROR = 20;
+    public static final int TAKE_PIC_SEC = 0;
+    public static final int SAVE_TO_ALBUM_SEC = 1;
+    protected final static String[] permissions = { Manifest.permission.CAMERA, Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE };
+				
     private boolean cameraPermissionInManifest;     // Whether or not the CAMERA permission is declared in AndroidManifest.xml
 
     private final PendingRequests pendingRequests = new PendingRequests();
@@ -256,21 +261,35 @@ public class Capture extends CordovaPlugin {
      * Sets up an intent to capture images.  Result handled by onActivityResult()
      */
     private void captureImage(Request req) {
-        boolean needExternalStoragePermission =
-            !PermissionHelper.hasPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
 
-        boolean needCameraPermission = cameraPermissionInManifest &&
-            !PermissionHelper.hasPermission(this, Manifest.permission.CAMERA);
+        boolean saveAlbumPermission = PermissionHelper.hasPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+                && PermissionHelper.hasPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        boolean takePicturePermission = PermissionHelper.hasPermission(this, Manifest.permission.CAMERA);
 
-        if (needExternalStoragePermission || needCameraPermission) {
-            if (needExternalStoragePermission && needCameraPermission) {
-                PermissionHelper.requestPermissions(this, req.requestCode, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.CAMERA});
-            } else if (needExternalStoragePermission) {
-                PermissionHelper.requestPermission(this, req.requestCode, Manifest.permission.WRITE_EXTERNAL_STORAGE);
-            } else {
-                PermissionHelper.requestPermission(this, req.requestCode, Manifest.permission.CAMERA);
-            }
-        } else {
+
+        // CB-10120: The CAMERA permission does not need to be requested unless it is declared
+        // in AndroidManifest.xml. This plugin does not declare it, but others may and so we must
+        // check the package info to determine if the permission is present.
+
+        if (!takePicturePermission) {
+            takePicturePermission = true;
+            try {
+                PackageManager packageManager = this.cordova.getActivity().getPackageManager();
+                String[] permissionsInPackage = packageManager.getPackageInfo(this.cordova.getActivity().getPackageName(), PackageManager.GET_PERMISSIONS).requestedPermissions;
+                if (permissionsInPackage != null) {
+                    for (String permission : permissionsInPackage) {
+                        if (permission.equals(Manifest.permission.CAMERA)) {
+                            takePicturePermission = false;
+                            break;
+                        }
+                    }
+                }
+            } catch (NameNotFoundException e) {
+                // We are requesting the info for our package, so this should
+                // never be caught            }
+												}
+								}
+        if (takePicturePermission && saveAlbumPermission) {
             // Save the number of images currently on disk for later
             this.numPics = queryImgDB(whichContentStore()).getCount();
 
@@ -285,6 +304,13 @@ public class Capture extends CordovaPlugin {
             intent.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, imageUri);
 
             this.cordova.startActivityForResult((CordovaPlugin) this, intent, req.requestCode);
+								} else if (saveAlbumPermission && !takePicturePermission) {
+            PermissionHelper.requestPermission(this, TAKE_PIC_SEC, Manifest.permission.CAMERA);
+        } else if (!saveAlbumPermission && takePicturePermission) {
+            PermissionHelper.requestPermissions(this, TAKE_PIC_SEC,
+                    new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE});
+        } else {
+            PermissionHelper.requestPermissions(this, TAKE_PIC_SEC, permissions);
         }
     }
 
@@ -297,8 +323,16 @@ public class Capture extends CordovaPlugin {
      * Sets up an intent to capture video.  Result handled by onActivityResult()
      */
     private void captureVideo(Request req) {
-        if(cameraPermissionInManifest && !PermissionHelper.hasPermission(this, Manifest.permission.CAMERA)) {
-            PermissionHelper.requestPermission(this, req.requestCode, Manifest.permission.CAMERA);
+        ArrayList<String> list = new ArrayList<>();
+        if (!PermissionHelper.hasPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+            list.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if (cameraPermissionInManifest && !PermissionHelper.hasPermission(this, Manifest.permission.CAMERA))
+            list.add(Manifest.permission.CAMERA);
+        if (!PermissionHelper.hasPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE))
+            list.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+
+        if (list.size() > 0) {
+            PermissionHelper.requestPermissions(this, req.requestCode, list.toArray(new String[list.size()]));
         } else {
             Intent intent = new Intent(android.provider.MediaStore.ACTION_VIDEO_CAPTURE);
 
